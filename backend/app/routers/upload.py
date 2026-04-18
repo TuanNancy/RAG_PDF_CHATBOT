@@ -1,6 +1,5 @@
 """
-POST /api/upload: multipart/form-data PDF upload → indexing pipeline → UploadResponse.
-Updated to use new architecture with storage factory and document models.
+POST /api/upload: multipart/form-data PDF upload -> indexing pipeline -> UploadResponse.
 """
 import asyncio
 import logging
@@ -12,6 +11,15 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.core.auth import require_supabase_user
 from app.core.config import get_config
+from app.core.user_messages import (
+    upload_empty_file_message,
+    upload_file_too_large_message,
+    upload_invalid_extension_message,
+    upload_invalid_file_type_message,
+    upload_invalid_user_message,
+    upload_processing_error_message,
+    upload_validation_error_message,
+)
 from app.models.document import DocumentStatus, IndexingResult, create_indexing_result
 from app.services.supabase_pdf_storage import try_upload_pdf
 from app.storage.factory import create_and_connect_storage
@@ -19,6 +27,16 @@ from app.storage.factory import create_and_connect_storage
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["upload"])
+
+_EXTRA_ALLOWED_PDF_CONTENT_TYPES = {
+    "",
+    "application/x-pdf",
+    "application/acrobat",
+    "applications/vnd.pdf",
+    "text/pdf",
+    "text/x-pdf",
+    "application/octet-stream",
+}
 
 
 async def run_indexing_pipeline_from_upload(
@@ -29,31 +47,20 @@ async def run_indexing_pipeline_from_upload(
     """
     Run indexing pipeline on uploaded file content.
 
-    This function:
-    1. Loads PDF and extracts text
-    2. Chunks the text
-    3. Embeds chunks
-    4. Inserts into vector database
-
-    Args:
-        file_content: PDF file content as bytes
-        filename: Original filename
-        doc_id: Pre-generated document ID used for both S3 key and Milvus rows
-
-    Returns:
-        IndexingResult with doc_id, chunks_count, and warnings
+    Steps:
+    1. Load PDF and extract text
+    2. Chunk the text
+    3. Generate embeddings
+    4. Insert vectors into storage
     """
     import os
     import tempfile
 
-    from app.core.config import get_config
     from app.processors.pdf import chunk_documents, load_pdf_pages
     from app.providers.embeddings import get_embedder
 
-    config = get_config()
     start_time = time.time()
 
-    # Create temporary file
     suffix = os.path.splitext(filename)[1] or ".pdf"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
         f.write(file_content)
@@ -66,7 +73,6 @@ async def run_indexing_pipeline_from_upload(
         if not chunks:
             raise ValueError("No text chunks produced from PDF.")
 
-        # Embed chunks (dimension must match Milvus collection — use len(vectors[0]), not a guessed probe default)
         embedder = get_embedder()
         vectors = embedder.embed_documents([c["text"] for c in chunks])
 
@@ -78,18 +84,14 @@ async def run_indexing_pipeline_from_upload(
         vector_dim = len(vectors[0])
         if embedder.dimension != vector_dim:
             logger.warning(
-                "Embedder.dimension=%s differs from actual vector length=%s; using vector length for Milvus.",
+                "Embedder.dimension=%s differs from actual vector length=%s; using actual vector length.",
                 embedder.dimension,
                 vector_dim,
             )
 
-        # Insert into storage
         storage = await create_and_connect_storage()
         try:
-            # Ensure collection exists (recreates if existing schema dim mismatches)
             await storage.ensure_collection(vector_dim=vector_dim)
-
-            # Insert chunks
             insert_result = await storage.insert_chunks(
                 doc_id=doc_id,
                 chunks=chunks,
@@ -99,7 +101,6 @@ async def run_indexing_pipeline_from_upload(
             await storage.disconnect()
 
         processing_time = time.time() - start_time
-
         merged_warnings: list[str] = []
         if warnings:
             merged_warnings.extend(warnings)
@@ -116,7 +117,6 @@ async def run_indexing_pipeline_from_upload(
         )
 
     finally:
-        # Clean up temp file
         try:
             os.unlink(temp_path)
         except OSError:
@@ -130,30 +130,28 @@ async def upload_pdf(
 ) -> Dict[str, Any]:
     """
     Accept a PDF via multipart/form-data, validate size/type, run indexing pipeline,
-    return doc_id and chunks count. Handles errors gracefully.
-
-    Updated to use new architecture with storage factory and document models.
+    and return doc_id plus indexing metadata.
     """
     config = get_config()
 
-    # Validate content type
     content_type = file.content_type or ""
-    if content_type.split(";")[0].strip().lower() not in (
-        ct.lower() for ct in config.upload_allowed_content_types
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid file type: {content_type}. Allowed: {list(config.upload_allowed_content_types)}",
-        )
-
-    # Validate filename
     filename = file.filename or "document.pdf"
     if not filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="File must have .pdf extension.")
+        raise HTTPException(status_code=400, detail=upload_invalid_extension_message())
 
-    # Read and validate size
+    allowed_content_types = {
+        *(ct.lower() for ct in config.upload_allowed_content_types),
+        *_EXTRA_ALLOWED_PDF_CONTENT_TYPES,
+    }
+    normalized_content_type = content_type.split(";")[0].strip().lower()
+    if normalized_content_type not in allowed_content_types:
+        raise HTTPException(
+            status_code=400,
+            detail=upload_invalid_file_type_message(),
+        )
+
     max_bytes = config.upload_max_size_mb * 1024 * 1024
-    chunks_read = []
+    chunks_read: list[bytes] = []
     total_size = 0
 
     while True:
@@ -164,22 +162,20 @@ async def upload_pdf(
         if total_size > max_bytes:
             raise HTTPException(
                 status_code=413,
-                detail=f"File too large. Maximum size: {config.upload_max_size_mb} MB.",
+                detail=upload_file_too_large_message(config.upload_max_size_mb),
             )
         chunks_read.append(chunk)
 
     file_content = b"".join(chunks_read)
-
     if not file_content:
-        raise HTTPException(status_code=400, detail="Empty file.")
+        raise HTTPException(status_code=400, detail=upload_empty_file_message())
 
     uid = str(user.get("id") or "")
     if not uid:
-        raise HTTPException(status_code=401, detail="Invalid user: missing id.")
+        raise HTTPException(status_code=401, detail=upload_invalid_user_message())
+
     doc_id = str(uuid.uuid4())
 
-    # Store original PDF early so users can still find the file in Storage
-    # even if downstream indexing (Milvus/embeddings) fails.
     pdf_key, storage_warn = await asyncio.to_thread(
         try_upload_pdf,
         file_content,
@@ -196,19 +192,15 @@ async def upload_pdf(
             result.pdf_storage_key = pdf_key
             logger.info("PDF storage key set in response: %s", pdf_key)
         else:
-            logger.info("PDF storage key is None — S3 upload was skipped or failed")
+            logger.info("PDF storage key is None; storage upload was skipped or failed")
     except ValueError as e:
         logger.warning("Indexing validation error: %s", e)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=upload_validation_error_message(str(e))) from e
     except Exception as e:
         logger.exception("Indexing failed: %s", e)
-        # Surface cause for debugging (API/Milvus/dim); PDF issues usually raise ValueError → 400 above
-        msg = str(e).strip() or repr(e)
-        if len(msg) > 500:
-            msg = msg[:500] + "…"
         raise HTTPException(
             status_code=500,
-            detail=f"Indexing failed: {msg}",
+            detail=upload_processing_error_message(),
         ) from e
 
     return result.to_dict()

@@ -9,6 +9,14 @@ import httpx
 from fastapi import Header, HTTPException, status
 
 from app.core.config import get_config
+from app.core.user_messages import (
+    auth_invalid_header_message,
+    auth_invalid_token_message,
+    auth_invalid_user_payload_message,
+    auth_missing_header_message,
+    auth_not_configured_message,
+    auth_service_unavailable_message,
+)
 
 
 async def require_supabase_user(
@@ -20,21 +28,21 @@ async def require_supabase_user(
     if not authorization:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Authorization header.",
+            detail=auth_missing_header_message(),
         )
 
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid Authorization header format.",
+            detail=auth_invalid_header_message(),
         )
 
     config = get_config()
     if not config.supabase_url or not config.supabase_publishable_key:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Supabase auth is not configured on backend.",
+            detail=auth_not_configured_message(),
         )
 
     url = f"{config.supabase_url.rstrip('/')}/auth/v1/user"
@@ -49,19 +57,19 @@ async def require_supabase_user(
     except httpx.HTTPError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Supabase auth service unavailable: {exc}",
+            detail=auth_service_unavailable_message(),
         ) from exc
 
     if response.status_code != status.HTTP_200_OK:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired Supabase access token.",
+            detail=auth_invalid_token_message(),
         )
 
     payload = response.json()
     if not isinstance(payload, dict) or not payload.get("id"):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid Supabase user payload.",
+            detail=auth_invalid_user_payload_message(),
         )
     return payload

@@ -5,36 +5,35 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 const FEATURES = [
   {
     icon: "📄",
-    title: "Upload & Index PDF",
-    desc: "Tải lên tài liệu PDF, hệ thống tự động trích xuất nội dung và tạo chỉ mục tìm kiếm.",
+    title: "Tải lên và lập chỉ mục PDF",
+    desc: "Tải lên tài liệu PDF, hệ thống tự động trích xuất nội dung và tạo chỉ mục để tìm kiếm nhanh hơn.",
   },
   {
     icon: "🔍",
     title: "Tìm kiếm thông minh",
-    desc: "Đặt câu hỏi bằng ngôn ngữ tự nhiên, AI tìm các đoạn liên quan nhất trong tài liệu.",
+    desc: "Đặt câu hỏi bằng ngôn ngữ tự nhiên, AI sẽ tìm các đoạn liên quan nhất trong tài liệu.",
   },
   {
     icon: "💬",
     title: "Hỏi đáp với AI",
-    desc: "Nhận câu trả lời chính xác kèm trích dẫn số trang, stream theo thời gian thực.",
+    desc: "Nhận câu trả lời ngắn gọn, dễ hiểu và bám sát nội dung tài liệu đã tải lên.",
   },
   {
     icon: "🔒",
-    title: "Bảo mật & Riêng tư",
-    desc: "Xác thực qua Supabase, mỗi người dùng chỉ truy cập tài liệu của mình.",
+    title: "Bảo mật và riêng tư",
+    desc: "Xác thực bằng Supabase, giúp người dùng chỉ truy cập được dữ liệu của chính mình.",
   },
 ];
 
 const STEPS = [
-  { step: "1", title: "Upload PDF", desc: "Kéo thả hoặc chọn file PDF để tải lên." },
+  { step: "1", title: "Tải lên PDF", desc: "Kéo thả hoặc chọn file PDF để tải lên." },
   { step: "2", title: "Đặt câu hỏi", desc: "Hỏi bất kỳ điều gì về nội dung tài liệu." },
-  { step: "3", title: "Nhận câu trả lời", desc: "AI trả lời kèm nguồn trang cụ thể." },
+  { step: "3", title: "Nhận câu trả lời", desc: "AI tóm tắt hoặc giải thích nội dung bạn cần." },
 ];
 
 export default function Home() {
   return (
     <div className="flex min-h-screen flex-col bg-[#f7f7f4] dark:bg-slate-900">
-      {/* Header */}
       <header className="flex items-center justify-between border-b border-[#B22222]/10 px-6 py-4">
         <BrandMark />
         <div className="flex items-center gap-3">
@@ -54,15 +53,14 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Hero */}
       <section className="flex flex-1 items-center justify-center px-6 py-20">
         <div className="mx-auto max-w-3xl text-center">
           <h1 className="text-4xl font-bold tracking-tight text-slate-900 dark:text-slate-100 sm:text-5xl">
-            Hỏi đáp thông minh trên{" "}
+            Hỏi đáp và tóm tắt thông minh trên{" "}
             <span className="text-[#B22222]">tài liệu PDF</span>
           </h1>
           <p className="mx-auto mt-6 max-w-xl text-lg text-slate-600 dark:text-slate-400">
-            Upload tài liệu PDF, đặt câu hỏi bằng ngôn ngữ tự nhiên và nhận câu trả lời chính xác kèm trích dẫn số trang.
+            Tải lên tài liệu PDF, đặt câu hỏi bằng ngôn ngữ tự nhiên và nhận câu trả lời rõ ràng, dễ hiểu từ nội dung tài liệu.
           </p>
           <div className="mt-10 flex items-center justify-center gap-4">
             <Link
@@ -81,7 +79,6 @@ export default function Home() {
         </div>
       </section>
 
-      {/* How it works */}
       <section className="border-t border-[#B22222]/10 px-6 py-16">
         <div className="mx-auto max-w-4xl">
           <h2 className="mb-10 text-center text-2xl font-semibold text-slate-900 dark:text-slate-100">
@@ -103,7 +100,6 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Features */}
       <section className="border-t border-[#B22222]/10 px-6 py-16">
         <div className="mx-auto max-w-4xl">
           <h2 className="mb-10 text-center text-2xl font-semibold text-slate-900 dark:text-slate-100">
@@ -126,9 +122,8 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Footer */}
       <footer className="border-t border-[#B22222]/10 px-6 py-6 text-center text-xs text-slate-500">
-        Baymax — AI-powered PDF Q&A
+        Baymax — Trợ lý AI cho tài liệu PDF
       </footer>
     </div>
   );

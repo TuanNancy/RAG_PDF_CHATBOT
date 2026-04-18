@@ -3,10 +3,12 @@ RAG Agent for document query processing.
 Orchestrates document retrieval, context building, and streaming LLM responses.
 """
 import logging
-from typing import AsyncIterator, List, Optional, Any
+import re
+from typing import Any, AsyncIterator, List, Optional
 
-from app.ai.prompts import PromptTemplates
+from app.ai.prompts import get_system_prompt
 from app.core.config import get_config
+from app.core.user_messages import chat_error_message, chat_no_results_message
 from app.providers.base import BaseProvider
 from app.providers.embeddings import get_embedder
 from app.storage.base import BaseStorage, RetrievedChunk as StorageRetrievedChunk
@@ -20,20 +22,24 @@ class RAGAgent:
         provider: Optional[BaseProvider] = None,
         storage: Optional[BaseStorage] = None,
         config: Optional[Any] = None,
+        provider_model: Optional[str] = None,
     ):
         self.config = config or get_config()
         self.provider = provider
         self.storage = storage
         self.embedder = get_embedder()
+        self.provider_model = provider_model
 
     async def initialize(self) -> None:
         if self.provider is None:
             from app.providers.factory import create_provider
-            self.provider = create_provider(model=self.config.model)
+
+            self.provider = create_provider(model=self.provider_model or self.config.model)
             logger.info("Created OpenRouter provider")
 
         if self.storage is None:
             from app.storage.factory import create_storage
+
             self.storage = create_storage(storage_type=self.config.storage_type)
             logger.info("Created Milvus storage")
 
@@ -64,19 +70,87 @@ class RAGAgent:
             min_score=self.config.min_relevance_score,
         )
 
-        logger.info(f"Retrieved {len(retrieved_chunks)} chunks for query: {query[:50]}...")
+        logger.info("Retrieved %s chunks for query: %s...", len(retrieved_chunks), query[:50])
         return retrieved_chunks
+
+    def _normalize_chunk_text(self, text: str) -> str:
+        normalized = re.sub(r"\s+", " ", (text or "").strip().lower())
+        return normalized
+
+    def _is_near_duplicate_text(self, left: str, right: str) -> bool:
+        if not left or not right:
+            return False
+        if left == right:
+            return True
+
+        shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+        if len(shorter) >= 80 and shorter in longer:
+            return True
+
+        if len(shorter) < 80:
+            return False
+
+        overlap_ratio = len(shorter) / max(len(longer), 1)
+        return overlap_ratio >= 0.9 and shorter[: min(200, len(shorter))] == longer[: min(200, len(shorter))]
+
+    def _merge_retrieved_chunks(
+        self,
+        chunks: List[StorageRetrievedChunk],
+    ) -> List[StorageRetrievedChunk]:
+        if not chunks:
+            return []
+
+        sorted_chunks = sorted(
+            chunks,
+            key=lambda chunk: (
+                -(chunk.score or 0.0),
+                chunk.page,
+                len(chunk.text or ""),
+            ),
+        )
+
+        merged: list[StorageRetrievedChunk] = []
+        seen_texts: list[str] = []
+
+        for chunk in sorted_chunks:
+            normalized_text = self._normalize_chunk_text(chunk.text)
+            if not normalized_text:
+                continue
+
+            if any(self._is_near_duplicate_text(normalized_text, seen) for seen in seen_texts):
+                continue
+
+            merged.append(chunk)
+            seen_texts.append(normalized_text)
+
+        merged.sort(key=lambda chunk: (chunk.page, -(chunk.score or 0.0)))
+        logger.info("Normalized retrieved chunks: %s -> %s", len(chunks), len(merged))
+        return merged
 
     def _build_context(self, chunks: List[StorageRetrievedChunk]) -> str:
         if not chunks:
             return ""
 
-        parts = []
+        chunks = self._merge_retrieved_chunks(chunks)
+
+        parts: list[str] = []
         total_chars = 0
         max_chars = self.config.context_max_chars
+        header = (
+            "Below are relevant excerpts retrieved from the same document. "
+            "They may come from different parts of the file and can overlap slightly. "
+            "Use them to infer the main topic, key points, requirements, findings, or summary.\n\n"
+        )
 
-        for chunk in chunks:
-            block = f"[Trang {chunk.page}] (độ liên quan: {chunk.score:.2f})\n{chunk.text}"
+        for idx, chunk in enumerate(chunks, start=1):
+            text = (chunk.text or "").strip()
+            if not text:
+                continue
+
+            block = (
+                f"[Excerpt {idx}]\n"
+                f"{text}"
+            )
 
             if total_chars + len(block) > max_chars and parts:
                 break
@@ -84,7 +158,11 @@ class RAGAgent:
             parts.append(block)
             total_chars += len(block)
 
-        return "\n\n---\n\n".join(parts) if parts else ""
+        if not parts:
+            return ""
+
+        body = "\n\n".join(parts)
+        return f"{header}{body}"
 
     async def process_query_stream(
         self,
@@ -102,17 +180,12 @@ class RAGAgent:
             )
 
             if not retrieved_chunks:
-                fallback = (
-                    "Không tìm thấy đoạn văn nào trong tài liệu đủ liên quan với câu hỏi. "
-                    "Hãy thử đặt câu hỏi gần với nội dung file hơn."
-                    if language == "vi"
-                    else "No sufficiently relevant passages were retrieved from this document."
-                )
+                fallback = chat_no_results_message(language)
                 yield fallback
                 return
 
             context = self._build_context(retrieved_chunks)
-            system_prompt = PromptTemplates.get_system_prompt(language)
+            system_prompt = get_system_prompt(language)
 
             async for token in self.provider.stream_with_context(
                 query=query,
@@ -124,11 +197,11 @@ class RAGAgent:
                 yield token
 
         except Exception as e:
-            logger.exception(f"Error in streaming query: {e}")
-            yield f"Error: {str(e)}"
+            logger.exception("Error in streaming query: %s", e)
+            yield chat_error_message(language)
 
 
-async def create_rag_agent_with_defaults() -> RAGAgent:
-    agent = RAGAgent()
+async def create_rag_agent_with_defaults(model: Optional[str] = None) -> RAGAgent:
+    agent = RAGAgent(provider_model=model)
     await agent.initialize()
     return agent

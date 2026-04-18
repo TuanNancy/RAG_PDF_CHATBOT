@@ -8,9 +8,7 @@ interface SourceCardProps {
 
 export function SourceCard({ source }: SourceCardProps) {
   return (
-    <div
-      className="rounded-lg border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow dark:border-slate-600 dark:bg-slate-800"
-    >
+    <div className="rounded-lg border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow dark:border-slate-600 dark:bg-slate-800">
       <div className="flex flex-wrap items-center gap-2 p-3">
         <span className="rounded bg-slate-200 px-2 py-0.5 text-xs font-medium text-slate-700 dark:bg-slate-600 dark:text-slate-200">
           Trang {source.page}

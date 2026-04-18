@@ -10,3 +10,4 @@ class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1, description="User question")
     doc_id: str = Field(..., min_length=1, description="Document ID from upload response")
     language: str = Field(default="vi", description="Response language (vi or en)")
+    model: str | None = Field(default=None, description="Optional chat model override")

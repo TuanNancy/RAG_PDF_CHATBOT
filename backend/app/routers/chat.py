@@ -1,5 +1,5 @@
 """
-POST /api/chat: SSE stream with event types token, sources, [DONE].
+POST /api/chat: SSE stream with event types token, sources, error, done.
 """
 import json
 import logging
@@ -10,6 +10,14 @@ from fastapi.responses import StreamingResponse
 
 from app.ai.rag_agent import create_rag_agent_with_defaults
 from app.core.auth import require_supabase_user
+from app.core.model_catalog import get_allowed_chat_model_ids
+from app.core.user_messages import (
+    chat_document_required_message,
+    chat_error_message,
+    chat_invalid_model_message,
+    chat_no_results_message,
+    chat_query_required_message,
+)
 from app.schemas import ChatRequest
 
 logger = logging.getLogger(__name__)
@@ -21,11 +29,16 @@ def _sse_message(event: str, data: str) -> str:
     return f"event: {event}\ndata: {data}\n\n"
 
 
-async def _stream_chat_sse(query: str, doc_id: str, language: str = "vi") -> AsyncIterator[str]:
+async def _stream_chat_sse(
+    query: str,
+    doc_id: str,
+    language: str = "vi",
+    model: str | None = None,
+) -> AsyncIterator[str]:
     agent = None
 
     try:
-        agent = await create_rag_agent_with_defaults()
+        agent = await create_rag_agent_with_defaults(model=model)
 
         retrieved_chunks = await agent._retrieve_chunks(query, doc_id)
         sources_payload = [
@@ -35,15 +48,7 @@ async def _stream_chat_sse(query: str, doc_id: str, language: str = "vi") -> Asy
         yield _sse_message("sources", json.dumps(sources_payload))
 
         if not retrieved_chunks:
-            fallback = (
-                "Không tìm thấy đoạn văn nào trong tài liệu đủ liên quan với câu hỏi "
-                "(có thể do ngưỡng MIN_RELEVANCE_SCORE quá cao hoặc câu hỏi quá khác nội dung đã index). "
-                "Hãy thử hạ MIN_RELEVANCE_SCORE trong .env (ví dụ 0.25) hoặc đặt câu hỏi gần với nội dung file hơn."
-                if language == "vi"
-                else "No sufficiently relevant passages were retrieved from this document. "
-                "Try lowering MIN_RELEVANCE_SCORE in .env or rephrasing your question."
-            )
-            yield _sse_message("token", json.dumps(fallback))
+            yield _sse_message("token", json.dumps(chat_no_results_message(language)))
             yield _sse_message("done", json.dumps("[DONE]"))
             return
 
@@ -53,14 +58,13 @@ async def _stream_chat_sse(query: str, doc_id: str, language: str = "vi") -> Asy
             language=language,
             retrieved_chunks_override=retrieved_chunks,
         ):
-            safe = json.dumps(token) if token else ""
-            yield _sse_message("token", safe)
+            yield _sse_message("token", json.dumps(token if token else ""))
 
         yield _sse_message("done", json.dumps("[DONE]"))
 
     except Exception as e:
         logger.exception("Chat stream error: %s", e)
-        yield _sse_message("error", json.dumps({"message": str(e)}))
+        yield _sse_message("error", json.dumps({"message": chat_error_message(language)}))
         yield _sse_message("done", json.dumps("[DONE]"))
 
     finally:
@@ -77,13 +81,17 @@ async def chat(
         query = request.query.strip()
         doc_id = request.doc_id.strip()
         language = getattr(request, "language", "vi")
+        model = (request.model or "").strip() or None
+        if model and model not in get_allowed_chat_model_ids():
+            raise HTTPException(status_code=400, detail=chat_invalid_model_message(language))
+
         if not query:
-            raise HTTPException(status_code=400, detail="Query is required")
+            raise HTTPException(status_code=400, detail=chat_query_required_message(language))
         if not doc_id:
-            raise HTTPException(status_code=400, detail="Document ID is required")
+            raise HTTPException(status_code=400, detail=chat_document_required_message(language))
 
         return StreamingResponse(
-            _stream_chat_sse(query, doc_id, language),
+            _stream_chat_sse(query, doc_id, language, model),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -95,4 +103,4 @@ async def chat(
         raise
     except Exception as e:
         logger.exception("Chat error: %s", e)
-        raise HTTPException(status_code=500, detail="Chat stream failed.") from e
+        raise HTTPException(status_code=500, detail=chat_error_message(getattr(request, "language", "vi"))) from e

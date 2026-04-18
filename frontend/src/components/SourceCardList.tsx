@@ -1,7 +1,7 @@
 "use client";
 
-import { SourceCard } from "./SourceCard";
 import type { ChatSource } from "@/types";
+import { SourceCard } from "./SourceCard";
 
 interface SourceCardListProps {
   sources: ChatSource[];
@@ -15,10 +15,7 @@ export function SourceCardList({ sources }: SourceCardListProps) {
       </p>
       <div className="flex flex-col gap-2">
         {sources.map((s, i) => (
-          <SourceCard
-            key={`${s.page}-${s.source}-${i}`}
-            source={s}
-          />
+          <SourceCard key={`${s.page}-${s.source}-${i}`} source={s} />
         ))}
       </div>
     </div>

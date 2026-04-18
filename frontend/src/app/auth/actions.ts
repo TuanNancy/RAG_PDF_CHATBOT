@@ -2,6 +2,11 @@
 
 import { headers } from "next/headers";
 import { createClient } from "@/lib/server";
+import {
+  LOGIN_ERROR,
+  SIGNUP_ERROR,
+  mapSupabaseAuthMessage,
+} from "@/lib/messages";
 
 type AuthActionState = {
   status: "idle" | "success" | "error";
@@ -41,22 +46,24 @@ export async function loginAction(
     const { error, data } = await supabase.auth.signInWithPassword({ email, password });
 
     if (error) {
-      return { status: "error", message: error.message };
+      return {
+        status: "error",
+        message: mapSupabaseAuthMessage(error.message, LOGIN_ERROR),
+      };
     }
 
     if (!data.session) {
       return {
         status: "error",
-        message:
-          "Đăng nhập chưa hoàn tất (không tạo được session). Vui lòng thử lại.",
+        message: "Đăng nhập chưa hoàn tất. Vui lòng thử lại.",
       };
     }
 
     return { status: "success", message: "Đăng nhập thành công. Đang chuyển hướng..." };
-  } catch (error) {
+  } catch {
     return {
       status: "error",
-      message: error instanceof Error ? error.message : "Đăng nhập thất bại.",
+      message: LOGIN_ERROR,
     };
   }
 }
@@ -77,26 +84,35 @@ export async function signupAction(
     return { status: "error", message: "Mật khẩu tối thiểu 6 ký tự." };
   }
 
-  const supabase = await createClient();
-  const emailRedirectTo = await resolveRedirectUrl("/auth/login");
-  const { error } = await supabase.auth.signUp({
-    email,
-    password,
-    options: {
-      data: { full_name: fullName },
-      emailRedirectTo,
-    },
-  });
+  try {
+    const supabase = await createClient();
+    const emailRedirectTo = await resolveRedirectUrl("/auth/login");
+    const { error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: { full_name: fullName },
+        emailRedirectTo,
+      },
+    });
 
-  if (error) {
-    return { status: "error", message: error.message };
+    if (error) {
+      return {
+        status: "error",
+        message: mapSupabaseAuthMessage(error.message, SIGNUP_ERROR),
+      };
+    }
+
+    await supabase.auth.signOut();
+
+    return {
+      status: "success",
+      message: "Đăng ký thành công. Đang chuyển sang trang đăng nhập...",
+    };
+  } catch {
+    return {
+      status: "error",
+      message: SIGNUP_ERROR,
+    };
   }
-
-  // Keep signup flow deterministic: always continue from login screen.
-  await supabase.auth.signOut();
-
-  return {
-    status: "success",
-    message: "Đăng ký thành công. Đang chuyển sang trang đăng nhập...",
-  };
 }

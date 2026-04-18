@@ -35,7 +35,7 @@ export function ThemeToggle({ className }: { className?: string }) {
         "rounded-lg border border-slate-300 bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-200 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600",
         className
       )}
-      aria-label={dark ? "Bật sáng" : "Bật tối"}
+      aria-label={dark ? "Bật chế độ sáng" : "Bật chế độ tối"}
     >
       {dark ? "☀️ Sáng" : "🌙 Tối"}
     </button>

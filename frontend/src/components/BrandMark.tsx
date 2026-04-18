@@ -23,7 +23,7 @@ export function BrandMark({
 
   return (
     <div className="flex items-center gap-2">
-      <img src="/brand/logo" alt="Baymax logo" className={imageClass} />
+      <img src="/brand/logo" alt="Logo Baymax" className={imageClass} />
       <span className={textClass}>Baymax</span>
     </div>
   );

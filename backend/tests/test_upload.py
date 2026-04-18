@@ -46,7 +46,7 @@ def test_upload_rejects_non_pdf_content_type(client: TestClient) -> None:
         files={"file": ("doc.pdf", b"fake content", "text/plain")},
     )
     assert response.status_code == 400
-    assert "Invalid file type" in response.json().get("detail", "")
+    assert response.json().get("detail", "") == "Chi chap nhan file PDF."
 
 
 def test_upload_rejects_wrong_extension(client: TestClient) -> None:
@@ -56,7 +56,7 @@ def test_upload_rejects_wrong_extension(client: TestClient) -> None:
         files={"file": ("document.txt", MINIMAL_PDF_BYTES, "application/pdf")},
     )
     assert response.status_code == 400
-    assert "pdf extension" in response.json().get("detail", "").lower()
+    assert response.json().get("detail", "") == "File tải lên phải có đuôi .pdf."
 
 
 def test_upload_rejects_empty_file(client: TestClient) -> None:
@@ -66,7 +66,7 @@ def test_upload_rejects_empty_file(client: TestClient) -> None:
         files={"file": ("empty.pdf", b"", "application/pdf")},
     )
     assert response.status_code == 400
-    assert "empty" in response.json().get("detail", "").lower()
+    assert response.json().get("detail", "") == "File tải lên đang rỗng."
 
 
 @patch("app.routers.upload.get_config")
@@ -82,7 +82,7 @@ def test_upload_rejects_file_too_large(mock_get_config, client: TestClient) -> N
         files={"file": ("large.pdf", b"x" * 11, "application/pdf")},
     )
     assert response.status_code == 413
-    assert "too large" in response.json().get("detail", "").lower()
+    assert response.json().get("detail", "") == "File vượt quá giới hạn 0 MB."
 
 
 @patch("app.routers.upload.run_indexing_pipeline_from_upload")
@@ -145,7 +145,7 @@ def test_upload_400_on_indexing_value_error(
         files={"file": ("bad.pdf", MINIMAL_PDF_BYTES, "application/pdf")},
     )
     assert response.status_code == 400
-    assert "corrupt" in response.json().get("detail", "").lower()
+    assert response.json().get("detail", "") == "File PDF bị hỏng hoặc không đọc được."
 
 
 @patch("app.routers.upload.run_indexing_pipeline_from_upload")
@@ -153,11 +153,13 @@ def test_upload_500_on_indexing_exception(
     mock_pipeline,
     client: TestClient,
 ) -> None:
-    """500 when pipeline raises generic Exception."""
+    """500 when pipeline raises generic Exception, without leaking internal details."""
     mock_pipeline.side_effect = RuntimeError("Milvus connection failed")
     response = client.post(
         "/api/upload",
         files={"file": ("x.pdf", MINIMAL_PDF_BYTES, "application/pdf")},
     )
     assert response.status_code == 500
-    assert "Indexing failed" in response.json().get("detail", "")
+    detail = response.json().get("detail", "")
+    assert "Không thể xử lý file PDF" in detail
+    assert "Milvus" not in detail

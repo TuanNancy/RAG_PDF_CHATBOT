@@ -9,12 +9,48 @@ import { BrandMark } from "@/components/BrandMark";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { UploadZone } from "@/components/UploadZone";
 import { createClient } from "@/lib/client";
+import {
+  AUTH_CHECKING_SESSION,
+  AUTH_REQUIRED_DESCRIPTION,
+  AUTH_REQUIRED_TITLE,
+  AUTH_STATE_ERROR,
+  SIGN_OUT_ERROR,
+  mapSupabaseAuthMessage,
+} from "@/lib/messages";
+import { CHAT_MODEL_OPTIONS, DEFAULT_CHAT_MODEL } from "@/lib/modelOptions";
 import type { UploadResponse } from "@/types";
+
+type UploadedDocument = {
+  doc_id: string;
+  name: string;
+  chunks_count: number;
+  created_at?: string;
+};
+
+const SESSION_DOCS_STORAGE_KEY = "baymax_uploaded_documents";
+const ACTIVE_DOC_STORAGE_KEY = "baymax_active_document";
+const CHAT_MODEL_STORAGE_KEY = "baymax_selected_model";
+
+function formatUploadedTime(value?: string): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Intl.DateTimeFormat("vi-VN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    day: "2-digit",
+    month: "2-digit",
+  }).format(date);
+}
 
 export default function ChatPage() {
   const router = useRouter();
   const chatRef = useRef<ChatWindowHandle>(null);
-  const [docId, setDocId] = useState<string | null>(null);
+  const hasMountedModelNoticeRef = useRef(false);
+  const [documents, setDocuments] = useState<UploadedDocument[]>([]);
+  const [activeDocId, setActiveDocId] = useState<string | null>(null);
+  const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_CHAT_MODEL);
+  const [modelNotice, setModelNotice] = useState<string | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [authReady, setAuthReady] = useState(false);
@@ -27,9 +63,72 @@ export default function ChatPage() {
   const mock = !backendUrl;
   const supabase = useMemo(() => createClient(), []);
 
+  const activeDocument = documents.find((doc) => doc.doc_id === activeDocId) ?? null;
+  const activeModelOption =
+    CHAT_MODEL_OPTIONS.find((option) => option.id === selectedModel) ?? CHAT_MODEL_OPTIONS[1];
+
   const handleUploadComplete = (res: UploadResponse) => {
-    setDocId(res.doc_id);
+    const nextDoc: UploadedDocument = {
+      doc_id: res.doc_id,
+      name: res.name || `Tài liệu ${documents.length + 1}`,
+      chunks_count: res.chunks_count,
+      created_at: res.created_at,
+    };
+
+    setDocuments((prev) => {
+      const existing = prev.filter((doc) => doc.doc_id !== nextDoc.doc_id);
+      return [nextDoc, ...existing];
+    });
+    setActiveDocId(res.doc_id);
+    chatRef.current?.clear();
   };
+
+  const handleSelectDocument = (docId: string) => {
+    setActiveDocId(docId);
+    chatRef.current?.clear();
+  };
+
+  const handleRemoveDocument = (docId: string) => {
+    setDocuments((prev) => {
+      const nextDocs = prev.filter((doc) => doc.doc_id !== docId);
+      if (activeDocId === docId) {
+        setActiveDocId(nextDocs[0]?.doc_id ?? null);
+        chatRef.current?.clear();
+      }
+      return nextDocs;
+    });
+  };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const rawDocs = window.localStorage.getItem(SESSION_DOCS_STORAGE_KEY);
+      const rawActiveDoc = window.localStorage.getItem(ACTIVE_DOC_STORAGE_KEY);
+
+      if (rawDocs) {
+        const parsedDocs = JSON.parse(rawDocs) as UploadedDocument[];
+        if (Array.isArray(parsedDocs)) {
+          setDocuments(parsedDocs);
+        }
+      }
+
+      if (rawActiveDoc) {
+        setActiveDocId(rawActiveDoc);
+      }
+
+      const rawSelectedModel = window.localStorage.getItem(CHAT_MODEL_STORAGE_KEY);
+      if (
+        rawSelectedModel &&
+        CHAT_MODEL_OPTIONS.some((option) => option.id === rawSelectedModel)
+      ) {
+        setSelectedModel(rawSelectedModel);
+      }
+    } catch {
+      window.localStorage.removeItem(SESSION_DOCS_STORAGE_KEY);
+      window.localStorage.removeItem(ACTIVE_DOC_STORAGE_KEY);
+      window.localStorage.removeItem(CHAT_MODEL_STORAGE_KEY);
+    }
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -40,12 +139,14 @@ export default function ChatPage() {
         supabase.auth.getSession(),
       ]);
       if (!mounted) return;
+
       const sessionUser = sessionData.session?.user ?? null;
       const resolvedUser = userData.user ?? sessionUser;
       setUser(resolvedUser);
       setAccessToken(sessionData.session?.access_token ?? null);
+
       if (userError && !resolvedUser) {
-        setAuthError(userError.message);
+        setAuthError(mapSupabaseAuthMessage(userError.message, AUTH_STATE_ERROR));
       }
       setAuthReady(true);
     };
@@ -59,7 +160,8 @@ export default function ChatPage() {
       setAccessToken(session?.access_token ?? null);
       setAuthReady(true);
       if (!session?.user) {
-        setDocId(null);
+        setDocuments([]);
+        setActiveDocId(null);
       }
     });
 
@@ -68,6 +170,50 @@ export default function ChatPage() {
       subscription.unsubscribe();
     };
   }, [supabase]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(SESSION_DOCS_STORAGE_KEY, JSON.stringify(documents));
+  }, [documents]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (activeDocId) {
+      window.localStorage.setItem(ACTIVE_DOC_STORAGE_KEY, activeDocId);
+    } else {
+      window.localStorage.removeItem(ACTIVE_DOC_STORAGE_KEY);
+    }
+  }, [activeDocId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(CHAT_MODEL_STORAGE_KEY, selectedModel);
+  }, [selectedModel]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    if (!hasMountedModelNoticeRef.current) {
+      hasMountedModelNoticeRef.current = true;
+      return;
+    }
+    setModelNotice(`Đã chuyển sang model ${activeModelOption.label}.`);
+    const timer = window.setTimeout(() => setModelNotice(null), 2200);
+    return () => window.clearTimeout(timer);
+  }, [selectedModel, activeModelOption.label, authReady]);
+
+  useEffect(() => {
+    if (documents.length === 0) {
+      if (activeDocId !== null) {
+        setActiveDocId(null);
+      }
+      return;
+    }
+
+    const hasActiveDocument = documents.some((doc) => doc.doc_id === activeDocId);
+    if (!hasActiveDocument) {
+      setActiveDocId(documents[0].doc_id);
+    }
+  }, [documents, activeDocId]);
 
   useEffect(() => {
     if (!profileMenuOpen) return;
@@ -86,14 +232,25 @@ export default function ChatPage() {
     setAuthError(null);
     const { error } = await supabase.auth.signOut();
     if (error) {
-      setAuthError(error.message);
+      setAuthError(mapSupabaseAuthMessage(error.message, SIGN_OUT_ERROR));
       setAuthLoading(false);
       return;
     }
-    setDocId(null);
+    setDocuments([]);
+    setActiveDocId(null);
     setAuthLoading(false);
     router.push("/");
     router.refresh();
+  };
+
+  const clearChat = () => {
+    if (typeof window !== "undefined" && window.confirm("Bạn có chắc muốn xóa cuộc trò chuyện hiện tại?")) {
+      chatRef.current?.clear();
+    }
+  };
+
+  const exportChat = () => {
+    chatRef.current?.exportTranscript();
   };
 
   const isAuthed = !!user && !!accessToken;
@@ -105,27 +262,12 @@ export default function ChatPage() {
     (user?.user_metadata?.avatar_url as string | undefined) ??
     (user?.user_metadata?.picture as string | undefined) ??
     null;
-
   const initials = (displayName || user?.email || "U").trim().charAt(0).toUpperCase();
-
-  const startNewChat = () => {
-    chatRef.current?.clear();
-  };
-
-  const clearChat = () => {
-    if (typeof window !== "undefined" && window.confirm("Bạn có chắc muốn xóa toàn bộ cuộc trò chuyện?")) {
-      chatRef.current?.clear();
-    }
-  };
-
-  const exportChat = () => {
-    chatRef.current?.exportTranscript();
-  };
 
   if (!authReady) {
     return (
       <div className="flex h-screen items-center justify-center bg-[#f7f7f4] text-sm text-slate-600 dark:bg-slate-900 dark:text-slate-400">
-        Đang kiểm tra phiên đăng nhập...
+        {AUTH_CHECKING_SESSION}
       </div>
     );
   }
@@ -135,10 +277,10 @@ export default function ChatPage() {
       <div className="flex h-screen flex-col items-center justify-center bg-[#f7f7f4] dark:bg-slate-900">
         <BrandMark />
         <h2 className="mt-6 text-xl font-semibold text-slate-900 dark:text-slate-100">
-          Vui lòng đăng nhập
+          {AUTH_REQUIRED_TITLE}
         </h2>
         <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">
-          Bạn cần đăng nhập để sử dụng tính năng chat với tài liệu PDF.
+          {AUTH_REQUIRED_DESCRIPTION}
         </p>
         <div className="mt-6 flex gap-3">
           <Link
@@ -167,7 +309,6 @@ export default function ChatPage() {
       )}
 
       <div className="relative flex min-h-0 flex-1">
-        {/* Mobile backdrop */}
         {sidebarOpen && (
           <button
             type="button"
@@ -177,11 +318,10 @@ export default function ChatPage() {
           />
         )}
 
-        {/* Sidebar */}
         <aside
-          className={`fixed inset-y-0 left-0 z-40 flex w-[280px] shrink-0 flex-col border-r border-[#B22222]/20 bg-slate-900 text-white transition-all duration-300 ease-out dark:bg-slate-950 md:static md:z-auto ${
+          className={`fixed inset-y-0 left-0 z-40 flex w-[300px] shrink-0 flex-col border-r border-[#B22222]/20 bg-slate-900 text-white transition-all duration-300 ease-out dark:bg-slate-950 md:static md:z-auto ${
             sidebarOpen
-              ? "translate-x-0 md:w-[280px]"
+              ? "translate-x-0 md:w-[300px]"
               : "-translate-x-full md:w-0 md:translate-x-0 md:overflow-hidden md:border-0"
           }`}
         >
@@ -191,19 +331,80 @@ export default function ChatPage() {
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={startNewChat}
-            className="mx-5 mt-4 flex shrink-0 items-center justify-center gap-2 rounded-lg bg-[#B22222] px-4 py-3 text-sm font-medium text-white transition hover:bg-[#9a1d1d]"
-          >
-            <span className="text-lg leading-none">+</span>
-            Cuộc trò chuyện mới
-          </button>
+          <div className="border-b border-white/10 px-5 py-4">
+            <button
+              type="button"
+              onClick={() => chatRef.current?.clear()}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#B22222] px-4 py-3 text-sm font-medium text-white transition hover:bg-[#9a1d1d]"
+            >
+              Xóa cuộc trò chuyện
+            </button>
+          </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
-            <p className="px-3 pt-4 text-sm text-white/40 text-center">
-              Lịch sử trò chuyện sẽ xuất hiện ở đây
-            </p>
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+            <div className="mb-3 px-2">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/40">
+                Tài liệu đã tải lên
+              </p>
+              <p className="mt-1 text-xs text-white/50">
+                {documents.length === 0
+                  ? "Chưa có tài liệu nào trong phiên hiện tại."
+                  : `${documents.length} tài liệu khả dụng để chat.`}
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              {documents.length === 0 && (
+                <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-4 text-sm text-white/60">
+                  Tải lên một hoặc nhiều file PDF ở phần trên để bắt đầu.
+                </div>
+              )}
+
+              {documents.map((doc) => {
+                const isActive = doc.doc_id === activeDocId;
+                const uploadedTime = formatUploadedTime(doc.created_at);
+                return (
+                  <div
+                    key={doc.doc_id}
+                    className={`rounded-xl border px-3 py-3 transition ${
+                      isActive
+                        ? "border-[#B22222] bg-[#B22222]/15 text-white"
+                        : "border-white/10 bg-white/5 text-white/85 hover:bg-white/10"
+                    }`}
+                  >
+                    <div className="flex items-start gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleSelectDocument(doc.doc_id)}
+                        className="min-w-0 flex-1 text-left"
+                      >
+                        <div className="flex items-center gap-2">
+                          <div className="truncate text-sm font-medium">{doc.name}</div>
+                          {isActive && (
+                            <span className="rounded-full bg-white/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/90">
+                              Đang chọn
+                            </span>
+                          )}
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-2 text-xs text-white/60">
+                          <span>{doc.chunks_count} chunks</span>
+                          {uploadedTime && <span>Tải lúc {uploadedTime}</span>}
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveDocument(doc.doc_id)}
+                        className="shrink-0 rounded-lg border border-white/10 px-2 py-1 text-xs text-white/70 transition hover:bg-white/10 hover:text-white"
+                        aria-label={`Xóa tài liệu ${doc.name}`}
+                        title="Xóa khỏi phiên hiện tại"
+                      >
+                        Xóa
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
           <div className="shrink-0 border-t border-white/10 px-4 py-4">
@@ -238,7 +439,7 @@ export default function ChatPage() {
                     className="flex w-full items-center rounded-lg px-3 py-2 text-sm font-medium text-white transition hover:bg-white/10"
                     role="menuitem"
                   >
-                    🏠 Trang chủ
+                    Trang chủ
                   </Link>
                   <button
                     type="button"
@@ -255,7 +456,6 @@ export default function ChatPage() {
           </div>
         </aside>
 
-        {/* Main */}
         <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-white dark:bg-slate-900">
           <header className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-slate-700">
             <div className="flex min-w-0 items-center gap-3">
@@ -265,32 +465,72 @@ export default function ChatPage() {
                 className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-slate-600 transition hover:bg-[#f7f7f4] hover:text-[#B22222] dark:text-slate-300 dark:hover:bg-slate-800"
                 aria-label="Ẩn hiện sidebar"
               >
-                <span className="text-xl">☰</span>
+                <span className="text-xl">|||</span>
               </button>
-              <h1 className="truncate text-lg font-semibold text-slate-900 dark:text-slate-100">
-                Tìm kiếm & tóm tắt tài liệu
-              </h1>
+              <div className="min-w-0">
+                <h1 className="truncate text-lg font-semibold text-slate-900 dark:text-slate-100">
+                  Tóm tắt và hỏi đáp tài liệu
+                </h1>
+                <p className="truncate text-xs text-slate-500 dark:text-slate-400">
+                  {activeDocument
+                    ? `Đang chat với: ${activeDocument.name}`
+                    : "Hãy chọn một tài liệu để bắt đầu chat."}
+                </p>
+              </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              <div className="hidden min-w-[220px] sm:block">
+                <label className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 dark:border-slate-600 dark:text-slate-300">
+                  <span>Mô hình</span>
+                  <select
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                  className="min-w-0 flex-1 bg-transparent text-sm outline-none"
+                >
+                  {CHAT_MODEL_OPTIONS.map((option) => (
+                    <option key={option.id} value={option.id} className="text-slate-900">
+                      {option.label} - {option.shortName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+                <p className="mt-1 px-1 text-xs text-slate-500 dark:text-slate-400">
+                  {activeModelOption.label} - {activeModelOption.shortName}: {activeModelOption.description}
+                </p>
+              </div>
               <button
                 type="button"
                 onClick={clearChat}
                 className="hidden items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 transition hover:border-[#B22222]/40 hover:bg-[#f7f7f4] hover:text-[#B22222] sm:inline-flex dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
               >
-                🗑 Xóa chat
+                Xóa chat
               </button>
               <button
                 type="button"
                 onClick={exportChat}
                 className="hidden items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 transition hover:border-[#B22222]/40 hover:bg-[#f7f7f4] hover:text-[#B22222] sm:inline-flex dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
               >
-                ⬇ Xuất file
+                Xuất file
               </button>
             </div>
           </header>
 
+          {modelNotice && (
+            <div className="shrink-0 border-b border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-700 dark:border-emerald-900 dark:bg-emerald-900/20 dark:text-emerald-300">
+              {modelNotice}
+            </div>
+          )}
+
           <section className="shrink-0 border-b border-slate-200 bg-[#f7f7f4] px-4 py-5 dark:border-slate-700 dark:bg-slate-900/50">
-            <div className="mx-auto w-full max-w-[800px]">
+            <div className="mx-auto w-full max-w-[900px]">
+              <div className="mb-3 text-sm text-slate-600 dark:text-slate-300">
+                Bạn có thể tải thêm nhiều file PDF. Mỗi lần chat sẽ dùng tài liệu đang được chọn ở thanh bên trái.
+              </div>
+              <div className="mb-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                <span className="font-medium">Mô hình hiện tại:</span> {activeModelOption.label}
+                {" · "}
+                {activeModelOption.shortName}: {activeModelOption.description}
+              </div>
               <div className="h-[104px] w-full">
                 <UploadZone
                   onUploadComplete={handleUploadComplete}
@@ -305,16 +545,17 @@ export default function ChatPage() {
           <div className="flex min-h-0 flex-1 flex-col">
             <ChatWindow
               ref={chatRef}
-              docId={docId}
+              docId={activeDocId}
               mock={mock}
               accessToken={accessToken}
+              selectedModel={selectedModel}
             />
           </div>
         </main>
       </div>
 
       <footer className="shrink-0 border-t border-slate-200 py-1.5 text-center text-[10px] text-slate-500 dark:border-slate-700 dark:text-slate-500">
-        {mock ? "Chưa kết nối backend — chế độ demo" : "Đã kết nối backend"}
+        {mock ? "Chưa kết nối backend - chế độ demo" : "Đã kết nối backend"}
       </footer>
     </div>
   );

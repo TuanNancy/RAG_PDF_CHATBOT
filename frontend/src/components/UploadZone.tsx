@@ -2,13 +2,19 @@
 
 import { useCallback, useState } from "react";
 import { uploadPDF } from "@/lib/api";
+import {
+  AUTH_SESSION_REQUIRED,
+  BACKEND_CONNECTION_ERROR,
+  GENERIC_UPLOAD_ERROR,
+  PDF_REQUIRED_ERROR,
+  sanitizeUserMessage,
+} from "@/lib/messages";
 import type { UploadResponse } from "@/types";
 
 type Status = "idle" | "dragging" | "uploading" | "success" | "error";
 
 interface UploadZoneProps {
   onUploadComplete?: (res: UploadResponse) => void;
-  /** When true, upload is simulated (no backend). For demo. */
   mock?: boolean;
   accessToken?: string | null;
   compact?: boolean;
@@ -25,6 +31,20 @@ export function UploadZone({
   const [result, setResult] = useState<UploadResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filename, setFilename] = useState<string | null>(null);
+
+  const isAcceptedPdf = useCallback((file: File) => {
+    const type = (file.type || "").toLowerCase();
+    const name = (file.name || "").toLowerCase();
+    return (
+      name.endsWith(".pdf") ||
+      type === "application/pdf" ||
+      type === "application/x-pdf" ||
+      type === "application/acrobat" ||
+      type === "applications/vnd.pdf" ||
+      type === "text/pdf" ||
+      type === "text/x-pdf"
+    );
+  }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -47,15 +67,15 @@ export function UploadZone({
       setProgress(0);
       const step = 100 / 20;
       let n = 0;
-      const t = setInterval(() => {
+      const timer = setInterval(() => {
         n += 1;
         setProgress(Math.min(n * step, 100));
         if (n >= 20) {
-          clearInterval(t);
+          clearInterval(timer);
           const res: UploadResponse = {
             doc_id: `mock-${Date.now()}`,
             chunks_count: Math.max(3, Math.floor(Math.random() * 15)),
-            message: "Upload and indexing completed (mock).",
+            message: "Tải lên và index thành công (mock).",
           };
           setResult(res);
           setStatus("success");
@@ -76,13 +96,11 @@ export function UploadZone({
 
       try {
         if (!accessToken) {
-          throw new Error("Thiếu phiên đăng nhập. Vui lòng đăng nhập lại.");
+          throw new Error(AUTH_SESSION_REQUIRED);
         }
         const res = await uploadPDF(file, accessToken);
         if (!res) {
-          throw new Error(
-            "Không thể kết nối backend. Hãy kiểm tra `NEXT_PUBLIC_API_URL`."
-          );
+          throw new Error(BACKEND_CONNECTION_ERROR);
         }
 
         setResult(res);
@@ -90,11 +108,33 @@ export function UploadZone({
         setStatus("success");
         onUploadComplete?.(res);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Upload failed.");
+        setError(
+          sanitizeUserMessage(
+            err instanceof Error ? err.message : "",
+            GENERIC_UPLOAD_ERROR
+          )
+        );
         setStatus("error");
       }
     },
     [accessToken, onUploadComplete]
+  );
+
+  const handleIncomingFile = useCallback(
+    async (file: File) => {
+      if (!isAcceptedPdf(file)) {
+        setError(PDF_REQUIRED_ERROR);
+        setStatus("error");
+        return;
+      }
+
+      if (mock) {
+        simulateUpload(file);
+      } else {
+        await uploadToBackend(file);
+      }
+    },
+    [isAcceptedPdf, mock, simulateUpload, uploadToBackend]
   );
 
   const handleDrop = useCallback(
@@ -104,37 +144,19 @@ export function UploadZone({
       setStatus("idle");
       const file = e.dataTransfer.files?.[0];
       if (!file) return;
-      if (file.type !== "application/pdf") {
-        setError("Chỉ chấp nhận file PDF.");
-        setStatus("error");
-        return;
-      }
-      if (mock) {
-        simulateUpload(file);
-      } else {
-        await uploadToBackend(file);
-      }
+      await handleIncomingFile(file);
     },
-    [mock, simulateUpload, uploadToBackend]
+    [handleIncomingFile]
   );
 
   const handleFileInput = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      if (file.type !== "application/pdf") {
-        setError("Chỉ chấp nhận file PDF.");
-        setStatus("error");
-        return;
-      }
-      if (mock) {
-        simulateUpload(file);
-      } else {
-        await uploadToBackend(file);
-      }
+      await handleIncomingFile(file);
       e.target.value = "";
     },
-    [mock, simulateUpload, uploadToBackend]
+    [handleIncomingFile]
   );
 
   const isActive = status === "dragging" || status === "uploading";
@@ -155,8 +177,8 @@ export function UploadZone({
       >
         {status === "idle" && (
           <>
-            <p className="text-center text-slate-600 dark:text-slate-400">
-              Kéo thả file PDF vào đây hoặc nhấn để chọn
+              <p className="text-center text-slate-600 dark:text-slate-400">
+              Kéo thả file PDF vào đây hoặc nhấn để chọn file
             </p>
             <label className="cursor-pointer rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600">
               Chọn file
@@ -177,7 +199,7 @@ export function UploadZone({
         {status === "uploading" && (
           <div className="w-full max-w-xs space-y-2">
             <p className="text-center text-sm text-slate-600 dark:text-slate-400">
-              Đang index: {filename}
+              Đang xử lý: {filename}
             </p>
             <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
               <div
@@ -210,13 +232,13 @@ export function UploadZone({
             )}
             {typeof result.processing_time === "number" && (
               <p className="text-xs text-slate-500">
-                Thời gian:{" "}
-                <span className="font-medium">{result.processing_time}s</span>
+                Thời gian: <span className="font-medium">{result.processing_time}s</span>
               </p>
             )}
             {result.pdf_storage_key && (
               <p className="text-xs text-green-600 dark:text-green-400">
-                ✅ Đã lưu PDF lên Storage: <span className="font-medium">{result.pdf_storage_key}</span>
+                Đã lưu file gốc lên storage:{" "}
+                <span className="font-medium">{result.pdf_storage_key}</span>
               </p>
             )}
             {result.warnings && result.warnings.length > 0 && (
@@ -229,12 +251,8 @@ export function UploadZone({
 
         {status === "error" && (
           <div className="space-y-2 text-center">
-            <p className="text-sm font-medium text-red-600 dark:text-red-400">
-              Lỗi
-            </p>
-            <p className="text-sm text-slate-600 dark:text-slate-400">
-              {error}
-            </p>
+            <p className="text-sm font-medium text-red-600 dark:text-red-400">Lỗi</p>
+            <p className="text-sm text-slate-600 dark:text-slate-400">{error}</p>
           </div>
         )}
       </div>
