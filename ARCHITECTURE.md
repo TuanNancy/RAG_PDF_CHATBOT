@@ -13,7 +13,7 @@
 
 ```
 Upload PDF
-  → extract text by page (PyPDFLoader)
+  → extract text by page (PyMuPDF)
   → split into chunks (RecursiveCharacterTextSplitter)
   → generate embeddings (OpenRouter /v1/embeddings)
   → insert vectors + metadata into Milvus

@@ -12,7 +12,7 @@ Chatbot RAG (Retrieval-Augmented Generation) cho phép **upload file PDF và đ�
 | **LLM** | OpenRouter (chat completions, streaming) |
 | **Embeddings** | OpenRouter (`/v1/embeddings`) |
 | **Vector DB** | Milvus Standalone (pymilvus) |
-| **PDF Processing** | LangChain (PyPDFLoader + RecursiveCharacterTextSplitter) |
+| **PDF Processing** | PyMuPDF + LangChain RecursiveCharacterTextSplitter |
 | **Auth** | Supabase Auth (JWT verification) |
 | **PDF Storage** | Supabase Storage (S3-compatible, boto3) |
 | **Frontend** | Next.js 14 (App Router), React 18, TypeScript |
@@ -48,7 +48,7 @@ RAG-PDF-chatbot/
 │   │   │   └── chat.py           # POST /api/chat — SSE streaming chat
 │   │   │
 │   │   ├── processors/
-│   │   │   └── pdf.py            # PDF loading (PyPDFLoader) + chunking
+│   │   │   └── pdf.py            # PDF loading (PyMuPDF) + chunking
 │   │   │
 │   │   ├── providers/
 │   │   │   ├── base.py           # Abstract BaseProvider interface (LLM ops)
@@ -239,7 +239,7 @@ User upload PDF → POST /api/upload
   ├─ 1. Xác thực Supabase JWT (Bearer token)
   ├─ 2. Validate: content-type, extension, size ≤ 50MB
   ├─ 3. Upload PDF gốc lên Supabase S3 (boto3, non-blocking)
-  ├─ 4. load_pdf_pages() → PyPDFLoader (phát hiện scanned PDF)
+  ├─ 4. load_pdf_pages() → PyMuPDF (phát hiện scanned PDF)
   ├─ 5. chunk_documents() → RecursiveCharacterTextSplitter (1000/150)
   ├─ 6. Embed chunks → OpenRouter embeddings (batch 2048)
   ├─ 7. ensure_collection() → Tạo Milvus collection nếu chưa có

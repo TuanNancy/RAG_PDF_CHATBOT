@@ -1,12 +1,12 @@
 """
-PDF text extraction and chunking (LangChain + PyPDFLoader).
+PDF text extraction and chunking (PyMuPDF + LangChain text splitter).
 
 Processors handle document I/O only; embeddings and vector storage live in providers/ and storage/.
 """
 import logging
 import os
 
-from langchain_community.document_loaders import PyPDFLoader
+import fitz
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -31,16 +31,33 @@ def load_pdf_pages(
     original_filename: str | None = None,
 ) -> tuple[list[Document], list[str]]:
     """
-    Load PDF with PyPDFLoader; return (documents with page metadata, list of warnings).
+    Load PDF with PyMuPDF; return (documents with page metadata, list of warnings).
     Handles corrupt file (raises); detects likely scanned PDF (adds warning).
 
     When loading from a temp path, pass ``original_filename`` so chunk metadata keeps the real PDF name.
     """
     config = get_config()
     warnings: list[str] = []
+    docs: list[Document] = []
+    source_name = original_filename or os.path.basename(file_path)
+
     try:
-        loader = PyPDFLoader(file_path, mode="page")
-        docs = loader.load()
+        with fitz.open(file_path) as pdf:
+            if pdf.page_count == 0:
+                raise ValueError("PDF produced no pages (empty or unreadable).")
+
+            for page_index in range(pdf.page_count):
+                page = pdf.load_page(page_index)
+                text = page.get_text("text") or ""
+                docs.append(
+                    Document(
+                        page_content=text,
+                        metadata={
+                            "page": page_index,
+                            "source": source_name,
+                        },
+                    )
+                )
     except Exception as e:
         logger.exception("PDF load failed for %s: %s", file_path, e)
         raise ValueError(f"PDF file is corrupt or unreadable: {e!s}") from e
@@ -48,7 +65,6 @@ def load_pdf_pages(
     if not docs:
         raise ValueError("PDF produced no pages (empty or unreadable).")
 
-    source_name = original_filename or os.path.basename(file_path)
     low_text_pages = 0
     for d in docs:
         d.metadata["source"] = d.metadata.get("source") or source_name
